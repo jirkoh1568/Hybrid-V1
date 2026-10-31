@@ -4044,5 +4044,121 @@ try{var lastTab=localStorage.getItem('activeTab');if(lastTab&&document.getElemen
 
 </div>
 </div>
+  <div style="position:fixed;bottom:12px;right:12px;display:flex;gap:8px;align-items:center;z-index:9999">
+  <span id="syncStatus" title="Statut synchro">⚪</span>
+  <button id="btnSync" style="padding:10px 12px;border-radius:10px;border:0;background:#7c3aed;color:#fff;font-weight:600">🔑 Synchro</button>
+  <button id="btnExport" style="padding:10px 12px;border-radius:10px;border:0;background:#2563eb;color:#fff;font-weight:600">⬇</button>
+  <button id="btnImport" style="padding:10px 12px;border-radius:10px;border:0;background:#16a34a;color:#fff;font-weight:600">⬆</button>
+  <input type="file" id="fileImport" accept=".json" style="display:none">
+</div>
+<script>
+(function () {
+  var TK='__sync_token', GID='__sync_gist', DIRTY='__sync_dirty';
+  var FILE='data.json', DESC='Hybrid-V1-sync';
+  var rawSet=Storage.prototype.setItem, rawRemove=Storage.prototype.removeItem;
+  var st=document.getElementById('syncStatus'), timer;
+
+  function isSync(k){ return String(k).indexOf('__sync')===0; }
+  function snapshot(){
+    var d={};
+    for (var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!isSync(k)) d[k]=localStorage.getItem(k);
+    }
+    return d;
+  }
+  function api(path,opt){
+    opt=opt||{};
+    opt.headers={'Authorization':'Bearer '+localStorage.getItem(TK),
+      'Accept':'application/vnd.github+json','Content-Type':'application/json'};
+    return fetch('https://api.github.com'+path,opt).then(function(r){
+      if(!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+  }
+  function findOrCreate(){
+    var id=localStorage.getItem(GID);
+    if(id) return Promise.resolve(id);
+    return api('/gists?per_page=100').then(function(list){
+      var g=list.filter(function(x){return x.description===DESC;})[0];
+      if(g){ rawSet.call(localStorage,GID,g.id); return g.id; }
+      var files={}; files[FILE]={content:'{}'};
+      return api('/gists',{method:'POST',body:JSON.stringify({description:DESC,public:false,files:files})})
+        .then(function(g){ rawSet.call(localStorage,GID,g.id); return g.id; });
+    });
+  }
+  function push(){
+    return findOrCreate().then(function(id){
+      var files={}; files[FILE]={content:JSON.stringify(snapshot())};
+      return api('/gists/'+id,{method:'PATCH',body:JSON.stringify({files:files})});
+    }).then(function(){
+      rawRemove.call(localStorage,DIRTY); st.textContent='🟢';
+    }).catch(function(){ st.textContent='🔴'; });
+  }
+  function pull(){
+    return findOrCreate().then(function(id){ return api('/gists/'+id); }).then(function(g){
+      var f=g.files[FILE];
+      var remote=(f&&f.content)?JSON.parse(f.content):{};
+      var keys=Object.keys(remote);
+      if(!keys.length) return push();
+      var changed=false;
+      keys.forEach(function(k){
+        if(localStorage.getItem(k)!==remote[k]){ rawSet.call(localStorage,k,remote[k]); changed=true; }
+      });
+      st.textContent='🟢';
+      if(changed) location.reload();
+    }).catch(function(){ st.textContent='🔴'; });
+  }
+  function schedule(){
+    if(!localStorage.getItem(TK)) return;
+    rawSet.call(localStorage,DIRTY,'1');
+    st.textContent='🟠';
+    clearTimeout(timer); timer=setTimeout(push,1500);
+  }
+  Storage.prototype.setItem=function(k,v){
+    rawSet.apply(this,arguments);
+    if(this===localStorage && !isSync(k)) schedule();
+  };
+  Storage.prototype.removeItem=function(k){
+    rawRemove.apply(this,arguments);
+    if(this===localStorage && !isSync(k)) schedule();
+  };
+
+  document.getElementById('btnSync').onclick=function(){
+    var t=prompt('Colle ton token GitHub (ghp_...). Laisse vide pour désactiver la synchro.');
+    if(t===null) return;
+    t=t.trim();
+    if(!t){ rawRemove.call(localStorage,TK); st.textContent='⚪'; return; }
+    rawSet.call(localStorage,TK,t);
+    pull();
+  };
+  document.getElementById('btnExport').onclick=function(){
+    var blob=new Blob([JSON.stringify(snapshot())],{type:'application/json'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='sauvegarde-programme-'+new Date().toISOString().slice(0,10)+'.json';
+    a.click();
+  };
+  document.getElementById('btnImport').onclick=function(){ document.getElementById('fileImport').click(); };
+  document.getElementById('fileImport').onchange=function(e){
+    var f=e.target.files[0]; if(!f) return;
+    var r=new FileReader();
+    r.onload=function(){
+      try{
+        var d=JSON.parse(r.result);
+        Object.keys(d).forEach(function(k){ rawSet.call(localStorage,k,d[k]); });
+        rawSet.call(localStorage,DIRTY,'1');
+        alert('Import OK, la page va se recharger.');
+        location.reload();
+      }catch(err){ alert('Fichier invalide.'); }
+    };
+    r.readAsText(f);
+  };
+
+  if(localStorage.getItem(TK)){
+    if(localStorage.getItem(DIRTY)) push(); else pull();
+  }
+})();
+</script>
 </body>
 </html>
